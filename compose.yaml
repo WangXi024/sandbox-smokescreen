@@ -1,0 +1,43 @@
+name: sandbox-smokescreen
+
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.node
+    # 可信运行节点需要管理内部 Docker/cgroup/防火墙；任务沙箱本身仍为非特权 gVisor。
+    privileged: true
+    cgroup: private
+    init: true
+    restart: unless-stopped
+    environment:
+      SANDBOX_DEPLOYMENT: compose
+      SANDBOX_TEST_MODE: ${SANDBOX_TEST_MODE:-0}
+    ports:
+      - "${SANDBOX_BIND_IP:-127.0.0.1}:18443:18443"
+    mem_limit: 6g
+    memswap_limit: 6g
+    cpus: 4
+    pids_limit: 4096
+    ulimits:
+      core: 0
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=1g,mode=0755
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - ./deploy/settings.json:/opt/sandbox_model/deploy/settings.json:ro
+      - docker-data:/var/lib/docker
+      - state:/var/lib/sandbox_model
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "/opt/sandbox_model/.venv/bin/python", "-B", "/opt/sandbox_model/scripts/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15m
+      retries: 3
+    logging:
+      driver: none
+
+volumes:
+  docker-data:
+  state:

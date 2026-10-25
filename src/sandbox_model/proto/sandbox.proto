@@ -1,0 +1,95 @@
+syntax = "proto3";
+package lazyx.sandbox.v1;
+
+service SandboxService {
+  rpc Submit(TaskRequest) returns (JobStatus);
+  rpc Status(JobRef) returns (JobStatus);
+  rpc Cancel(JobRef) returns (JobStatus);
+  rpc Result(JobRef) returns (JobResult);
+  rpc Acknowledge(JobRef) returns (JobStatus);
+  rpc Ready(Empty) returns (ReadyReply);
+  rpc Metrics(Empty) returns (MetricsReply);
+}
+message Empty {}
+message InputFile { string path = 1; bytes data = 2; string sha256 = 3; }
+message TaskRequest {
+  string request_id = 1;
+  string kind = 2;
+  string environment = 3;
+  bytes code = 4;
+  repeated InputFile inputs = 5;
+  string entrypoint = 6;
+  repeated string network_domains = 7;
+  uint32 memory_mb = 8;
+  uint32 timeout_seconds = 9;
+  string url = 10;
+  string render_format = 11;
+  reserved 12;
+  reserved "permit";
+  map<string, string> environment_variables = 13;
+  repeated string dependencies = 14;
+  uint64 network_upload_bytes = 15;
+  uint64 network_download_bytes = 16;
+  ParseOptions parse_options = 17;
+}
+message ParseOptions {
+  bool pdf_images = 1;
+  uint32 max_pages = 2;
+  uint32 max_long_edge = 3;
+}
+message JobRef { string request_id = 1; }
+message Event { string phase = 1; string time = 2; }
+message JobStatus {
+  string request_id = 1;
+  string phase = 2;
+  string outcome = 3;
+  string error_code = 4;
+  bool cleanup_done = 5;
+  bool delivery_done = 6;
+  repeated Event events = 7;
+  uint64 elapsed_ms = 8;
+  uint64 input_bytes = 10;
+  uint64 output_bytes = 11;
+  uint32 model_calls = 12;
+  uint32 tool_calls = 13;
+  bool cpu_usage_available = 14;
+  bool peak_memory_available = 15;
+  uint64 log_bytes = 16;
+  string environment_id = 17;
+  bool environment_cache_hit = 18;
+  uint64 cpu_usage_usec = 19;
+  uint64 peak_memory_bytes = 20;
+  uint64 resource_sample_unix_ms = 21;
+  bool resource_usage_final = 22;
+}
+message Artifact { string path = 1; bytes data = 2; string sha256 = 3; }
+message JobResult {
+  JobStatus status = 1;
+  repeated Artifact artifacts = 2;
+  string stdout = 3;
+  string stderr = 4;
+  bytes proposal_json = 5;
+}
+message ReadyReply {
+  bool ready = 1;
+  repeated string environments = 2;
+  string mode = 3;
+  string reason = 4;
+  bool accepting_tasks = 5;
+  string admission_reason = 6;
+}
+message MetricsReply {
+  ReadyReply readiness = 1;
+  uint64 service_started_unix_ms = 2;
+  map<string, uint64> tasks_by_phase = 3;
+  map<string, uint64> finished_by_outcome = 4;
+  uint32 inflight = 5;
+  uint32 cleanup_pending = 6;
+  uint64 result_cache_bytes = 7;
+  uint32 history_records = 8;
+  uint32 builds_active = 9;
+  uint32 builds_pending = 10;
+  uint32 cache_images = 11;
+  uint64 cache_bytes = 12;
+  map<string, uint64> environment_counters = 13;
+}

@@ -1,0 +1,13 @@
+{
+  "dns_server": "1.1.1.1",
+  "dns_over_https": true,
+  "proxy_image": "sandbox-smokescreen-egress:7d0ddfa-tls1",
+  "concurrency": 2,
+  "max_inflight": 6,
+  "max_memory_mb": 1024,
+  "max_timeout_seconds": 120,
+  "upload_bytes": 8388608,
+  "download_bytes": 33554432,
+  "history_seconds": 86400,
+  "max_history": 4096
+}

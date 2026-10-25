@@ -1,0 +1,14 @@
+.venv/
+.uv-cache/
+.runtime/
+__pycache__/
+*.pyc
+.vm-state.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+catalog.json
+.DS_Store
+Thumbs.db

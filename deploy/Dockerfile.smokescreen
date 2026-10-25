@@ -1,0 +1,21 @@
+# 固定 MIT 许可的 Smokescreen；上游源码不打补丁，扩展代码在 src/egress。
+FROM golang:1.26.9@sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89 AS build
+ENV GOTOOLCHAIN=local
+WORKDIR /build
+COPY src/egress/go.mod src/egress/go.sum ./
+RUN go mod download
+COPY src/egress/ ./
+# 编译前执行并发检测测试；静态二进制用于最小代理运行镜像。
+RUN go test -race -count=1 ./... && CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o /egress .
+# 随二进制保留使用到的第三方许可证；最终镜像不包含 Squid 或 Linux 用户态软件包。
+RUN go mod vendor && mkdir -p /licenses && cp go.mod go.sum /licenses/ \
+    && find vendor -type f \( -iname '*license*' -o -iname '*copying*' -o -iname '*notice*' \) \
+       -exec cp --parents '{}' /licenses/ \; \
+    && cp /usr/local/go/LICENSE /licenses/GO-LICENSE
+# 最终镜像只保留代理、证书和许可证，以非 root 用户运行。
+FROM scratch
+COPY --from=build /egress /egress
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /licenses /licenses
+USER 65532:65532
+ENTRYPOINT ["/egress"]

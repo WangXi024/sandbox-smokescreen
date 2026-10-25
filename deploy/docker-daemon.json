@@ -1,0 +1,13 @@
+{
+  "hosts": ["unix:///run/docker.sock"],
+  "runtimes": {
+    "runsc": {
+      "path": "/usr/local/bin/runsc",
+      "runtimeArgs": ["--platform=systrap", "--network=sandbox"]
+    }
+  },
+  "log-driver": "none",
+  "storage-driver": "overlay2",
+  "features": {"containerd-snapshotter": false},
+  "default-ulimits": {"core": {"Name": "core", "Soft": 0, "Hard": 0}}
+}

@@ -1,0 +1,28 @@
+# 专用 Docker 运行节点；不连接 Docker Desktop 的 socket。
+FROM docker:29.1.3-dind@sha256:173f284a4299164772a90f52b373e73e087583c0963f1334c9995f190ef6f3f5 AS docker
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/sandbox_model/src DOCKER_HOST=unix:///run/docker.sock
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv curl ca-certificates zstd iptables conntrack openssl \
+    iproute2 util-linux procps mount && rm -rf /var/lib/apt/lists/*
+COPY --from=docker /usr/local/bin/ /usr/local/bin/
+COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+# 此构建固定为 ARM64，校验下载摘要后安装 gVisor 的 runsc 等组件。
+RUN test "$(uname -m)" = aarch64 \
+    && curl --retry 3 -fsSL https://storage.googleapis.com/gvisor/releases/release/20261005.0/aarch64/gvisor.tar.zstd -o /tmp/gvisor.tar.zstd \
+    && echo 'cb1c1ac7616f1f0e2287d39660aa9a65f1d81b866c7fa29457f78da62373baadda2d55aa96a200743dfe56193e43d2b6256af23a23d41d0b49a49b4971982435  /tmp/gvisor.tar.zstd' | sha512sum -c - \
+    && tar --zstd -xf /tmp/gvisor.tar.zstd -C /usr/local/bin && rm /tmp/gvisor.tar.zstd
+# 外层节点承载管理服务，任务与代理容器由节点内部的 Docker 创建。
+WORKDIR /opt/sandbox_model
+COPY requirements.txt ./
+RUN python3 -m venv .venv && .venv/bin/pip install --no-cache-dir -r requirements.txt
+COPY src/ src/
+COPY deploy/ deploy/
+COPY scripts/ scripts/
+COPY tests/ tests/
+# 在镜像构建阶段生成 gRPC 模块，使运行节点具备服务接口代码。
+RUN .venv/bin/python -m grpc_tools.protoc -Isrc --python_out=src --grpc_python_out=src src/sandbox_model/proto/sandbox.proto
+COPY deploy/docker-daemon.json /etc/docker/daemon.json
+# dind 初始化节点环境，再由入口脚本启动内部 Docker 与服务监督程序。
+ENTRYPOINT ["/usr/local/bin/dind", "bash", "/opt/sandbox_model/deploy/node-entrypoint.sh"]

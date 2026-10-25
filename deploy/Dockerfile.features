@@ -1,0 +1,14 @@
+# 任务功能镜像：在基础运行镜像上加入 Node、浏览器、字体和文件处理库。
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS node
+FROM sandbox-model-runtime:sb0
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update && apt-get install -y --no-install-recommends chromium=155.0.8059.39-1~deb13u1 fonts-noto-cjk procps libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir playwright==1.56.0 pypdf==6.1.1 python-docx==1.2.0 openpyxl==3.1.5 PyYAML==6.0.3 six==1.17.0
+# 图片与 PDF 渲染依赖只接受固定版本的预编译 wheel。
+RUN pip install --no-cache-dir --only-binary=:all: Pillow==12.3.0 pypdfium2==5.14.0
+# 将平台执行和产物导出程序预装进镜像，任务无需自行下载这些组件。
+COPY src/sandbox_model/guest.py /opt/platform/guest.py
+COPY src/sandbox_model/export.py /opt/platform/export.py
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium NODE_PATH=/usr/local/lib/node_modules
+LABEL lazyx.catalog="sb1-fixed-v1"
