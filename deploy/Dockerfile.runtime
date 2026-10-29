@@ -12,7 +12,7 @@ RUN patch --fuzz=0 -p1 < /tmp/execd-workspace-route.patch
 COPY src/execd_workspace/ /build/components/execd/pkg/web/
 WORKDIR /build/components/execd
 RUN CGO_ENABLED=0 go build -p 2 -trimpath -buildvcs=false -ldflags="-buildid= -X github.com/alibaba/opensandbox/internal/version.Version=1.1.1-lazyx-peer1" -o /build/execd ./main.go
-RUN gofmt -w pkg/web/workspace_fs*.go && go test -p 2 ./pkg/web -run "TestTrustedControlPeer|TestWorkspace" -count=1 && CGO_ENABLED=0 go test -p 2 -c -o /build/workspace.test ./pkg/web
+RUN gofmt -w pkg/web/workspace_fs*.go && CGO_ENABLED=0 go test -p 2 ./pkg/web -run "TestTrustedControlPeer|TestWorkspace" -count=1 && CGO_ENABLED=0 go test -p 2 -c -o /build/workspace.test ./pkg/web
 
 # 编译阶段结束后，将执行组件和上游启动脚本放入 Python 任务基础镜像。
 FROM opensandbox/execd:release-1.1.1@sha256:cda2bc35409bbf57561599b316cafb899598f7dce671332e7ceda14eb1cfeded AS upstream

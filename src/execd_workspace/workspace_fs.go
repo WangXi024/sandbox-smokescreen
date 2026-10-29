@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -59,8 +60,13 @@ func init() {
 			os.Exit(1)
 		}
 		runtime.LockOSThread()
-		if !workspaceDropFilesystemCredentials() {
-			os.Exit(1)
+		if stage := workspaceDropFilesystemCredentials(); stage != "" {
+			control := os.NewFile(3, "workspace-control")
+			if control != nil {
+				json.NewEncoder(control).Encode(workspaceFSReply{ErrorCode: "CONTROL_" + stage})
+				control.Close()
+			}
+			os.Exit(0)
 		}
 		reply := workspaceFSReply{}
 		var request workspaceFSRequest
@@ -83,30 +89,42 @@ func init() {
 	}
 }
 
-// Keep a root control identity so UID1000 code cannot inspect/ptrace the worker.
-// Actual filesystem syscalls run on this locked thread with fsuid/fsgid1000 and no caps.
-func workspaceDropFilesystemCredentials() bool {
+// Keep root real/saved IDs so UID1000 code cannot inspect/ptrace the worker.
+// Effective IDs are 1000, which also sets filesystem IDs on Linux and gVisor.
+// gVisor intentionally returns ENOSYS for setfsuid/setfsgid; do not depend on them.
+func workspaceDropFilesystemCredentials() string {
 	if err := syscall.Setgroups([]int{}); err != nil {
-		return false
+		return fmt.Sprintf("SETGROUPS_%v", err)
 	}
-	syscall.RawSyscall(syscall.SYS_SETFSGID, 1000, 0, 0)
-	syscall.RawSyscall(syscall.SYS_SETFSUID, 1000, 0, 0)
-	uid, _, _ := syscall.RawSyscall(syscall.SYS_SETFSUID, ^uintptr(0), 0, 0)
-	gid, _, _ := syscall.RawSyscall(syscall.SYS_SETFSGID, ^uintptr(0), 0, 0)
-	if uid != 1000 || gid != 1000 {
-		return false
+	if err := syscall.Setresgid(0, 1000, 0); err != nil {
+		return fmt.Sprintf("SETRESGID_%v", err)
+	}
+	if err := syscall.Setresuid(0, 1000, 0); err != nil {
+		return fmt.Sprintf("SETRESUID_%v", err)
+	}
+	if os.Getuid() != 0 || os.Geteuid() != 1000 || os.Getgid() != 0 || os.Getegid() != 1000 {
+		return "IDENTITY_MISMATCH"
 	}
 	header := struct {
 		Version uint32
 		PID     int32
 	}{0x20080522, 0}
 	data := [2]struct{ Effective, Permitted, Inheritable uint32 }{}
-	_, _, errno := syscall.RawSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0)
+	// Both production and conformance helper are CGO_ENABLED=0. Apply capset to
+	// every Go thread; none may retain permitted capabilities after ID changes.
+	_, _, errno := syscall.AllThreadsSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0)
 	if errno != 0 {
-		return false
+		return fmt.Sprintf("CAPSET_%d", errno)
 	}
 	_, _, errno = syscall.RawSyscall(syscall.SYS_PRCTL, 4, 0, 0) // PR_SET_DUMPABLE=0
-	return errno == 0
+	if errno != 0 {
+		return fmt.Sprintf("SET_DUMPABLE_%d", errno)
+	}
+	value, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, 3, 0, 0) // PR_GET_DUMPABLE
+	if errno != 0 || value != 0 {
+		return fmt.Sprintf("GET_DUMPABLE_%d_%d", errno, value)
+	}
+	return ""
 }
 
 func workspaceFilesystemHandler(c *gin.Context) {

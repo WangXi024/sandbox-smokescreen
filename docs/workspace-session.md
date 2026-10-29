@@ -4,7 +4,7 @@
 
 一个工作区持有一只固定登记镜像的 gVisor 容器，直到 Close 或硬 TTL（默认 600 秒、最多 1800 秒），与旧任务共用准入和并发槽。代码 UID/GID 为 1000；只读根文件系统、无网络许可、无凭据、受限 capabilities、no-new-privileges 与 PID/CPU/内存/禁用交换限制保持启用。工作区 64 MiB、其他可写目录分别受 tmpfs 限额约束。每个文件可读写最多 8 MiB，gRPC 消息上限 32 MiB；每工作区最多 64 条命令、总缓存输出 8 MiB、单通道最多 1 MiB，命令最长 120 秒。正常完成命令的后台子进程可跨文件操作存活，Close 销毁整个容器和所有进程。
 
-文件接口直接执行真实 POSIX 文件调用，包含权限、链接、目录、重命名与非严格 realpath；FIFO/设备不作为普通文件读取。返回值由镜像内固定的 root 控制 helper 经专用 FD3 管道产生，不使用用户 stdout 或用户 manifest 推断元数据。helper 保留 root 实 UID/EUID，锁定 OS 线程后把 FSUID/FSGID 设为 1000、清空 capabilities 并设置 non-dumpable，因此文件权限仍按 UID1000 执行。协议拒绝 /proc、/sys、/dev 以及链接别名，read/write/list 另要求内核 openat2 RESOLVE_NO_MAGICLINKS。命令自己的 /proc 使用不受此文件协议限制。控制 HTTP 接口仍受原 trustedControlPeer、runtime-init 与令牌中间件约束。
+文件接口直接执行真实 POSIX 文件调用，包含权限、链接、目录、重命名与非严格 realpath；FIFO/设备不作为普通文件读取。返回值由镜像内固定的 root 控制 helper 经专用 FD3 管道产生，不使用用户 stdout 或用户 manifest 推断元数据。helper 保留 root 实/保存 UID/GID，将有效 UID/GID 降为 1000（内核相应将 FSUID/FSGID 设为 1000）、清空 capabilities 并设置 non-dumpable；不依赖 gVisor 返回 ENOSYS 的 setfsuid/setfsgid，因此文件权限仍按 UID1000 执行。协议拒绝 /proc、/sys、/dev 以及链接别名，read/write/list 另要求内核 openat2 RESOLVE_NO_MAGICLINKS。命令自己的 /proc 使用不受此文件协议限制。控制 HTTP 接口仍受原 trustedControlPeer、runtime-init 与令牌中间件约束。
 
 命令输出由固定 execd 分别回传 stdout/stderr，退出码只采用 execd 的进程生命周期状态。超时、取消、输出截断与退出码可用性分别暴露，不能由用户输出中的数字或 JSON 覆盖。文件修改在独立后台 Task 中完成并保存请求回执，RPC 响应丢失后可用同 ID 重放原回执。节点重启会清理旧环境，不恢复旧正文，也不会把未知结果宣称成功。
 

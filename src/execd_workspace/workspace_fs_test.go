@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -150,6 +151,14 @@ func TestWorkspaceHelperIdentityAndPermissions(t *testing.T) {
 	if st.Uid != 1000 || st.Gid != 1000 {
 		t.Fatalf("wrong owner %d:%d", st.Uid, st.Gid)
 	}
+	if r := call(workspaceFSRequest{Op: "chmod", Path: file, Mode: 0}); r.ErrorCode != "" {
+		t.Fatal(r.ErrorCode)
+	}
+	for _, op := range []string{"read", "write"} {
+		if r := call(workspaceFSRequest{Op: op, Path: file, Data: []byte("blocked")}); r.ErrorCode != "PERMISSION_DENIED" {
+			t.Fatal("owner chmod000 bypass: ", op, r.ErrorCode)
+		}
+	}
 	rootFile := filepath.Join(base, "root.txt")
 	os.WriteFile(rootFile, []byte("must not read"), 0600)
 	if r := call(workspaceFSRequest{Op: "read", Path: rootFile}); r.ErrorCode != "PERMISSION_DENIED" {
@@ -213,7 +222,20 @@ func init() {
 		if ptraceErr == nil {
 			syscall.PtraceDetach(pid)
 		}
-		if openErr == nil || ptraceErr == nil {
+		readFD, readErr := syscall.Open("/proc/"+strconv.Itoa(pid)+"/fd/3", syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if readErr == nil {
+			syscall.Close(readFD)
+		}
+		stdinFD, stdinErr := syscall.Open("/proc/"+strconv.Itoa(pid)+"/fd/0", syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if stdinErr == nil {
+			syscall.Close(stdinFD)
+		}
+		memFD, memErr := syscall.Open("/proc/"+strconv.Itoa(pid)+"/mem", syscall.O_RDWR, 0)
+		if memErr == nil {
+			syscall.Close(memFD)
+		}
+		signalErr := syscall.Kill(pid, 0)
+		if openErr == nil || ptraceErr == nil || readErr == nil || stdinErr == nil || memErr == nil || signalErr == nil {
 			os.Exit(3)
 		}
 		os.Exit(0)
@@ -260,7 +282,7 @@ func TestWorkspaceCrossUIDControlBoundary(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		data, _ := os.ReadFile("/proc/" + strconv.Itoa(command.Process.Pid) + "/status")
 		status := string(data)
-		if strings.Contains(status, "Uid:\t0\t0\t0\t1000") && strings.Contains(status, "Gid:\t0\t0\t0\t1000") && strings.Contains(status, "CapEff:\t0000000000000000") {
+		if strings.Contains(status, "Uid:\t0\t1000\t0\t1000") && strings.Contains(status, "Gid:\t0\t1000\t0\t1000") && strings.Contains(status, "CapEff:\t0000000000000000") {
 			ready = true
 			break
 		}
@@ -269,10 +291,34 @@ func TestWorkspaceCrossUIDControlBoundary(t *testing.T) {
 	if !ready {
 		t.Fatal("helper control root identity / UID1000 FS / zero capabilities not observed")
 	}
-	attacker := exec.Command(copyPath, "--lazyx-test-control-attack", strconv.Itoa(command.Process.Pid))
-	attacker.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000}}
-	if out, err := attacker.CombinedOutput(); err != nil {
-		t.Fatalf("UID1000 proc/ptrace boundary failed: %v %s", err, out)
+	threads, err := os.ReadDir("/proc/" + strconv.Itoa(command.Process.Pid) + "/task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range threads {
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(command.Process.Pid) + "/task/" + thread.Name() + "/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		status := string(data)
+		if !strings.Contains(status, "CapEff:\t0000000000000000") || !strings.Contains(status, "CapPrm:\t0000000000000000") {
+			t.Fatal("helper thread retained capabilities")
+		}
+	}
+
+	attack := func(path string) ([]byte, error) {
+		attacker := exec.Command(path, "--lazyx-test-control-attack", strconv.Itoa(command.Process.Pid))
+		attacker.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000}}
+		return attacker.CombinedOutput()
+	}
+	// Docker tmpfs is noexec by default. The fixed image binary is executable
+	// in gVisor; Go's transient unit-test binary may instead have a 0700 parent.
+	out, attackErr := attack(executable)
+	if errors.Is(attackErr, os.ErrPermission) {
+		out, attackErr = attack(copyPath)
+	}
+	if attackErr != nil {
+		t.Fatalf("UID1000 proc/ptrace/signal boundary failed: %v %s", attackErr, out)
 	}
 	inputWrite.Write([]byte("{\"op\":\"stat\",\"path\":\"/workspace\"}"))
 	inputWrite.Close()
