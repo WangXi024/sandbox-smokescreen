@@ -21,12 +21,30 @@ STATE=Path('/var/lib/sandbox_model/workspaces.json')
 MAX_FILE=8*1024*1024
 MAX_OUTPUT=1024*1024
 MAX_COMMANDS=64
+CLOSE_GRACE_SECONDS=5
 MAX_CACHED_OUTPUT=8*1024*1024
 MUTATIONS={'write','mkdir','remove','rename','chmod','symlink'}
 OPERATIONS=MUTATIONS|{'read','stat','lstat','list','readlink','realpath'}
 PERSISTED=('workspace_id','request_id','digest','job_id','state','deadline','cleanup_done','error_code')
 SAFE_ERRORS={'MISSING','NOT_DIRECTORY','IS_DIRECTORY','PERMISSION_DENIED','INVALID_PATH',
              'UNAVAILABLE','LIMIT_EXCEEDED','UNSUPPORTED_FILE_TYPE','ALREADY_EXISTS','SYMLINK_LOOP'}
+
+# Fixed isolated stdlib trampoline. Native execd records this process' real
+# exit status; argv remains literal and never becomes a shell string.
+ARGV_TRAMPOLINE = """import os,sys
+args=sys.argv[2:]
+try:
+    os.execvpe(args[0],args,os.environ)
+except FileNotFoundError:
+    sys.stderr.write('command not found\\n')
+    sys.exit(127)
+except PermissionError:
+    sys.stderr.write('command not executable\\n')
+    sys.exit(126)
+except OSError:
+    sys.stderr.write('command could not be executed\\n')
+    sys.exit(126)
+"""
 
 
 def identity(value):
@@ -79,7 +97,7 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
         entry=self.entries.get(value)
         if not entry:await context.abort(grpc.StatusCode.NOT_FOUND,'WORKSPACE_NOT_FOUND')
         if require_open:
-            if time.time()>=entry['deadline'] and not entry['cleanup_done']:
+            if entry['state'] in {'opening','open'} and time.time()>=entry['deadline'] and not entry['cleanup_done']:
                 self._request_close(entry,'EXPIRED')
             if entry['state']!='open':await context.abort(grpc.StatusCode.FAILED_PRECONDITION,'WORKSPACE_CLOSED')
         return entry
@@ -158,9 +176,12 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
     def _request_close(self,entry,error=''):
         entry['close_requested']=True
         if entry['cleanup_done']:return
+        if entry['state']!='closing':
+            # Preserve the original hard TTL; give the normal cleaner only a
+            # short bounded head start over the independent watchdog.
+            entry['deadline']=min(entry['deadline'],time.time()+CLOSE_GRACE_SECONDS)
         entry['state']='closing'
         entry['error_code']=entry['error_code'] or error
-        entry['deadline']=0
         if not entry['cleanup_task'] or entry['cleanup_task'].done():
             entry['cleanup_task']=asyncio.create_task(self._cleanup(entry))
         self.persist()
@@ -187,8 +208,10 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
             except Exception:pass
         try:
             await self.manager.cleanup(entry['job_id'])
-        except Exception:
-            entry['error_code']='CLEANUP_PENDING'
+        except Exception as error:
+            entry['error_code']=entry['error_code'] or 'CLEANUP_PENDING'
+            entry['cleanup_failure']=type(error).__name__
+            print('[workspace cleanup pending] '+type(error).__name__,flush=True)
             self.persist()
             return
         finally:
@@ -196,6 +219,8 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
                 try:await sandbox.close()
                 except Exception:pass
         entry.update(state='closed',cleanup_done=True,sandbox=None)
+        if entry['error_code']=='CLEANUP_PENDING':entry['error_code']=''
+        entry['cleanup_failure']=''
         for command in entry['commands'].values():command['stdout'].clear();command['stderr'].clear()
         entry['ledger'].clear()
         if entry['slot']:
@@ -204,7 +229,8 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
 
     async def Status(self,request,context):
         entry=await self._find(request.workspace_id,context)
-        if not entry['cleanup_done'] and time.time()>=entry['deadline']:self._request_close(entry,'EXPIRED')
+        if entry['state'] in {'opening','open'} and not entry['cleanup_done'] and time.time()>=entry['deadline']:
+            self._request_close(entry,'EXPIRED')
         return self.status(entry)
 
     async def Close(self,request,context):
@@ -233,8 +259,9 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
 
     async def maintain(self):
         for entry in list(self.entries.values()):
-            if not entry['cleanup_done'] and (time.time()>=entry['deadline'] or entry['state']=='closing'):
-                self._request_close(entry,'EXPIRED' if time.time()>=entry['deadline'] else '')
+            if not entry['cleanup_done']:
+                if entry['state']=='closing':self._request_close(entry)
+                elif time.time()>=entry['deadline']:self._request_close(entry,'EXPIRED')
 
     async def shutdown(self):
         for entry in self.entries.values():self._request_close(entry,'SERVICE_STOP')
@@ -361,7 +388,8 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
         try:
             async with entry['command_slots']:
                 if command['cancelled'] or entry['close_requested']:return
-                argv=['/bin/sh','-lc',request.shell_command] if request.shell else list(request.argv)
+                argv=(['/bin/sh','-lc',request.shell_command] if request.shell else
+                      ['/usr/local/bin/python','-I','-c',ARGV_TRAMPOLINE,'--',*request.argv])
                 stream=asyncio.create_task(entry['sandbox'].commands.run(argv,
                     opts=RunCommandOpts(uid=1000,gid=1000,working_directory=request.cwd or '/workspace',
                         timeout=timedelta(seconds=120),envs=dict(request.env)|{'TMPDIR':'/tmp'}),

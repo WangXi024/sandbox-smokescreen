@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import grpc
 from sandbox_model.proto import workspace_pb2 as pb
-from sandbox_model.workspace_service import WorkspaceService, MAX_FILE
+from sandbox_model.workspace_service import WorkspaceService, MAX_FILE, ARGV_TRAMPOLINE
 
 
 class Abort(Exception):
@@ -126,6 +126,37 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         request.data=b'different'
         with self.assertRaises(Abort) as caught:await self.service.Filesystem(request,self.context)
         self.assertEqual(caught.exception.code,grpc.StatusCode.ALREADY_EXISTS)
+
+    async def test_close_watchdog_grace_never_extends_ttl_and_does_not_reset(self):
+        await self.open();entry=self.service.entries['operation'];hard=entry['deadline']
+        self.manager.cleanup.side_effect=RuntimeError('temporary')
+        before=time.time();await self.service.Close(pb.WorkspaceRef(workspace_id='operation'),self.context)
+        deadline=entry['deadline']
+        self.assertGreaterEqual(deadline,before);self.assertLessEqual(deadline,before+5.1);self.assertLessEqual(deadline,hard)
+        await self.service.maintain();await entry['cleanup_task']
+        self.assertEqual(entry['deadline'],deadline);self.assertEqual(entry['error_code'],'CLEANUP_PENDING')
+        self.manager.cleanup.side_effect=None;await self.service.maintain();await entry['cleanup_task']
+        self.assertTrue(entry['cleanup_done']);self.assertEqual(entry['error_code'],'')
+
+    async def test_short_hard_ttl_is_not_extended_by_close_grace(self):
+        await self.open();entry=self.service.entries['operation'];entry['deadline']=time.time()+.5
+        hard=entry['deadline'];await self.service.Close(pb.WorkspaceRef(workspace_id='operation'),self.context)
+        self.assertEqual(entry['deadline'],hard);self.assertEqual(entry['error_code'],'')
+
+    async def test_trampoline_has_true_missing_127_permission_126_and_literal_argv(self):
+        import os,sys
+        async def execute(argv):
+            child=await asyncio.create_subprocess_exec(sys.executable,'-I','-c',ARGV_TRAMPOLINE,'--',*argv,
+                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+            stdout,stderr=await child.communicate();return child.returncode,stdout,stderr
+        self.assertEqual((await execute(['/definitely_missing_workspace_program']))[0],127)
+        directory=Path(self.temp.name)/'not-executable';directory.mkdir()
+        self.assertEqual((await execute([str(directory)]))[0],126)
+        code='import json,sys;print(json.dumps(sys.argv[1:]));sys.exit(7)'
+        values=['literal; exit 0','$(echo injected)','two words']
+        result=await execute([sys.executable,'-c',code,*values])
+        import json
+        self.assertEqual(result[0],7);self.assertEqual(json.loads(result[1]),values)
 
     async def test_native_eight_mib_transfer_and_special_errors(self):
         await self.open();data=bytes(range(256))*(MAX_FILE//256)

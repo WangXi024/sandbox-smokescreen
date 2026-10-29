@@ -660,7 +660,8 @@ class Manager(rpc.SandboxServiceServicer):
         # 控制接口异常时使用可信 Docker 侧清理，包含响应丢失但已创建的实例。
         for container in await asyncio.to_thread(self.client.containers.list,all=True,filters={'label':f'lazyx.job={ident}'}):
             if container.labels.get('lazyx.sb')=='true' or container.labels.get('opensandbox.io/id'):
-                await asyncio.to_thread(container.remove,force=True,v=True)
+                try:await asyncio.to_thread(container.remove,force=True,v=True)
+                except docker.errors.NotFound:pass  # Concurrent watchdog already removed it.
         if ident in self.network.jobs:
             await asyncio.to_thread(self.network.release,ident)
         left = await asyncio.to_thread(self.client.containers.list,all=True,filters={'label':f'lazyx.job={ident}'})

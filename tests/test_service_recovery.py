@@ -26,6 +26,16 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.manager.persist=Mock()
         self.manager.cleanup=AsyncMock()
 
+    async def test_cleanup_tolerates_watchdog_removal_and_still_verifies_no_resources(self):
+        from docker.errors import NotFound
+        container=SimpleNamespace(labels={'lazyx.sb':'true'},remove=Mock(side_effect=NotFound('already removed')))
+        self.manager.client.containers.list.side_effect=[[container],[]]
+        self.manager.network=SimpleNamespace(jobs={},revoke=Mock(),remaining_resources=Mock(return_value={'networks':0,'rules':0}))
+        self.manager.registry=Mock();self.manager.server_process=None;self.manager.test_mode=False
+        await Manager.cleanup(self.manager,'concurrent-watchdog')
+        self.manager.network.remaining_resources.assert_called_once_with('concurrent-watchdog')
+        self.assertEqual(self.manager.client.containers.list.call_count,2)
+
     async def test_private_leases_restore_proxy_identity_before_cleanup(self):
         context={'job_id':'old-job','name':'old-network','proxy_out_ip':'172.27.250.100'}
         with tempfile.TemporaryDirectory() as directory:
