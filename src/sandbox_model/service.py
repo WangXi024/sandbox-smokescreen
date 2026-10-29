@@ -406,15 +406,20 @@ class Manager(rpc.SandboxServiceServicer):
         env = self.environments
         active = sum(item['deadline'] > 0 for item in env.active.values())
         cached = [item for item in env.entries.values() if item.get('image_id')]
+        workspaces = list(self.workspace_service.entries.values()) if getattr(self,'workspace_service',None) else []
+        workspace_cache = sum(len(c['stdout'])+len(c['stderr']) for w in workspaces for c in w['commands'].values())
         return pb.MetricsReply(readiness=await self.Ready(request,context),
             service_started_unix_ms=self.service_started_unix_ms,
             tasks_by_phase={phase:sum(j['phase']==phase for j in jobs) for phase in PHASES},
             finished_by_outcome={outcome:sum(j['phase']=='finished' and j['outcome']==outcome for j in jobs)
                                  for outcome in ('success','failed','cancelled','unknown','needs_approval')},
-            inflight=sum(j['phase']!='finished' for j in jobs),
+            inflight=sum(j['phase']!='finished' for j in jobs)
+                     + sum(w['state'] in {'opening','open'} for w in workspaces),
             cleanup_pending=sum(j['phase']=='finished' and not j.get('cleanup_done') for j in jobs)
-                            + sum(item['deadline']==0 for item in env.active.values()),
-            result_cache_bytes=sum(self.result_bytes(j) for j in jobs),history_records=len(jobs),
+                            + sum(item['deadline']==0 for item in env.active.values())
+                            + sum(w['state']=='closing' and not w['cleanup_done'] for w in workspaces),
+            result_cache_bytes=sum(self.result_bytes(j) for j in jobs)+workspace_cache,
+            history_records=len(jobs)+len(workspaces),
             builds_active=active,builds_pending=max(0,sum(not p['task'].done() for p in env.pending.values())-active),
             cache_images=len(cached),cache_bytes=sum(item['bytes'] for item in cached),
             environment_counters=env.counters)

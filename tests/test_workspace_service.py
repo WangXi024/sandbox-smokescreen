@@ -95,6 +95,25 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.manager.cleanup.side_effect=None;await self.service.maintain();await self.service.entries['operation']['cleanup_task']
         self.assertTrue(self.service.entries['operation']['cleanup_done']);self.assertEqual(self.manager.slots._value,1)
 
+    async def test_existing_metrics_include_live_and_pending_workspace_cleanup(self):
+        from sandbox_model.service import Manager
+        from sandbox_model.proto import sandbox_pb2
+        manager=object.__new__(Manager)
+        manager.jobs={};manager.workspace_service=self.service;manager.service_started_unix_ms=1
+        manager.environments=NS(active={},entries={},pending={},counters={})
+        manager.Ready=AsyncMock(return_value=sandbox_pb2.ReadyReply(ready=True))
+        await self.open()
+        result=await manager.Metrics(None,self.context)
+        self.assertEqual(result.inflight,1);self.assertEqual(result.cleanup_pending,0)
+        self.manager.cleanup.side_effect=RuntimeError('temporary')
+        await self.service.Close(pb.WorkspaceRef(workspace_id='operation'),self.context)
+        result=await manager.Metrics(None,self.context)
+        self.assertEqual(result.inflight,0);self.assertEqual(result.cleanup_pending,1)
+        self.manager.cleanup.side_effect=None
+        await self.service.maintain();await self.service.entries['operation']['cleanup_task']
+        result=await manager.Metrics(None,self.context)
+        self.assertEqual(result.inflight,0);self.assertEqual(result.cleanup_pending,0)
+
     async def test_mutation_receipt_survives_rpc_cancellation_and_body_conflict(self):
         await self.open();called=asyncio.Event();finish=asyncio.Event()
         async def mutate(*args):called.set();await finish.wait();return pb.FileReply(path='/workspace/file')
