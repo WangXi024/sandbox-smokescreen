@@ -26,7 +26,7 @@ COPY deploy/ deploy/
 COPY scripts/ scripts/
 COPY tests/ tests/
 # 在镜像构建阶段生成 gRPC 模块，使运行节点具备服务接口代码。
-RUN .venv/bin/python -m grpc_tools.protoc -Isrc --python_out=src --grpc_python_out=src src/sandbox_model/proto/sandbox.proto
+RUN .venv/bin/python -m grpc_tools.protoc -Isrc --python_out=src --grpc_python_out=src src/sandbox_model/proto/sandbox.proto src/sandbox_model/proto/workspace.proto
 COPY deploy/docker-daemon.json /etc/docker/daemon.json
 # dind 初始化节点环境，再由入口脚本启动内部 Docker 与服务监督程序。
 ENTRYPOINT ["/usr/local/bin/dind", "bash", "/opt/sandbox_model/deploy/node-entrypoint.sh"]

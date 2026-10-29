@@ -1,0 +1,42 @@
+syntax = "proto3";
+package lazyx.workspace.v1;
+
+service WorkspaceService {
+  rpc Open(OpenWorkspaceRequest) returns (WorkspaceStatus);
+  rpc Status(WorkspaceRef) returns (WorkspaceStatus);
+  rpc Close(WorkspaceRef) returns (WorkspaceStatus);
+  rpc Filesystem(FileRequest) returns (FileReply);
+  rpc StartCommand(CommandRequest) returns (CommandReply);
+  rpc PollCommand(CommandRef) returns (CommandReply);
+  rpc CancelCommand(CommandRef) returns (CommandReply);
+}
+message OpenWorkspaceRequest { string request_id = 1; uint32 ttl_seconds = 2; uint32 memory_mb = 3; }
+message WorkspaceRef { string workspace_id = 1; }
+message WorkspaceStatus {
+  string workspace_id = 1; string state = 2; string working_dir = 3;
+  uint64 expires_unix_ms = 4; bool cleanup_done = 5; string error_code = 6;
+}
+message FileRequest {
+  string workspace_id = 1; string request_id = 2; string op = 3; string path = 4;
+  string target = 5; bytes data = 6; uint32 mode = 7; bool parents = 8; bool recursive = 9;
+}
+message FileEntry {
+  string name = 1; string path = 2; string kind = 3; bool is_dir = 4;
+  uint64 size = 5; uint32 mode = 6; int64 modified_unix_ns = 7; string link_target = 8;
+}
+message FileReply {
+  bytes data = 1; repeated FileEntry entries = 2; string path = 3;
+  string link_target = 4; string error_code = 5;
+}
+message CommandRequest {
+  string workspace_id = 1; string request_id = 2; repeated string argv = 3;
+  string shell_command = 4; bool shell = 5; string cwd = 6; map<string,string> env = 7;
+  uint32 timeout_seconds = 8; uint32 output_limit_bytes = 9;
+}
+message CommandRef { string workspace_id = 1; string command_id = 2; }
+message CommandReply {
+  string command_id = 1; string state = 2; bytes stdout = 3; bytes stderr = 4;
+  bool exit_code_available = 5; sint32 exit_code = 6; bool timed_out = 7;
+  bool cancelled = 8; bool output_truncated = 9; string error_code = 10;
+  bool output_complete = 11;
+}

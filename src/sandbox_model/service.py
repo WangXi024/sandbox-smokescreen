@@ -97,6 +97,7 @@ def path_name(value):
 class Manager(rpc.SandboxServiceServicer):
     """协调环境、任务和网络；执行完成与资源清理完成分别记录。"""
     def __init__(self, test_mode):
+        self.workspace_service = None
         self.test_mode = test_mode
         self.settings = Settings.load()
         self.jobs = {}
@@ -199,6 +200,7 @@ class Manager(rpc.SandboxServiceServicer):
     def leases(self):
         """写入管理心跳、截止时间和网络清理信息，供独立回收器失联时使用。"""
         owners = self.jobs | getattr(getattr(self, 'environments', None), 'active', {})
+        if getattr(self,'workspace_service',None):owners = owners | self.workspace_service.leases()
         contexts = {ident:{'deadline':owners[ident]['deadline'], 'network':self.network_snapshot(ident,ctx)}
                     for ident,ctx in list(self.network.jobs.items()) if ident in owners}
         atomic(RUN / 'leases.json', {'manager_pid':os.getpid(), 'opensandbox_pid':self.server_process.pid,
@@ -249,7 +251,9 @@ class Manager(rpc.SandboxServiceServicer):
         reserved = sum(MAX_OUTPUT + 144*1024 if j['phase'] != 'finished' else self.result_bytes(j)
                        for j in self.jobs.values())
         if reserved + MAX_OUTPUT + 144*1024 > 32*1024*1024:return 'RESULT_CACHE_FULL'
-        if sum(j['phase'] != 'finished' for j in self.jobs.values()) >= self.settings.max_inflight:
+        if (sum(j['phase'] != 'finished' for j in self.jobs.values())
+                + (self.workspace_service.active_count if getattr(self,'workspace_service',None) else 0)
+                >= self.settings.max_inflight):
             return 'QUEUE_FULL'
         return ''
 
@@ -781,6 +785,7 @@ class Manager(rpc.SandboxServiceServicer):
                     self.unready_reason = 'DOCKER_UNAVAILABLE'
                     self.ready = False
                     raise RuntimeError('CONTROL_LOST')
+                if self.workspace_service:await self.workspace_service.maintain()
                 self.leases()
                 for job in list(self.jobs.values()):
                     if job['phase'] != 'finished':resources.sample(job)
@@ -858,15 +863,19 @@ async def main(test_mode):
         raise SystemExit('必须在本项目专用 Linux 运行节点中启动')
     RUN.mkdir(mode=0o700,parents=True,exist_ok=True);os.umask(0o077)
     (RUN/'service.pid').write_text(str(os.getpid()))
+    from .workspace_service import WorkspaceService
+    from .proto import workspace_pb2_grpc as workspace_rpc
     manager=Manager(test_mode)
-    server=grpc.aio.server(options=[('grpc.max_receive_message_length',2*1024*1024),('grpc.max_send_message_length',8*1024*1024)])
+    manager.workspace_service=WorkspaceService(manager)
+    server=grpc.aio.server(options=[('grpc.max_receive_message_length',32*1024*1024),('grpc.max_send_message_length',32*1024*1024)])
     rpc.add_SandboxServiceServicer_to_server(manager,server)
+    workspace_rpc.add_WorkspaceServiceServicer_to_server(manager.workspace_service,server)
     server.add_insecure_port('0.0.0.0:18443')
     stop=asyncio.Event()
     for sig in (signal.SIGINT,signal.SIGTERM):asyncio.get_running_loop().add_signal_handler(sig,stop.set)
     maintenance=None
     try:
-        await manager.launch();await server.start();maintenance=asyncio.create_task(manager.maintenance())
+        await manager.launch();await manager.workspace_service.recover();await server.start();maintenance=asyncio.create_task(manager.maintenance())
         print('[就绪] 独立沙箱服务已启动：内网免认证 gRPC 18443',flush=True)
         stopping=asyncio.create_task(stop.wait())
         done,_=await asyncio.wait((stopping,maintenance),return_when=asyncio.FIRST_COMPLETED)
@@ -877,6 +886,7 @@ async def main(test_mode):
     finally:
         manager.unready_reason='SHUTTING_DOWN'
         manager.ready=False
+        await manager.workspace_service.shutdown()
         for job in list(manager.jobs.values()):manager.stop_job(job,'unknown' if maintenance and maintenance.done() else 'cancelled',
                                                                   'CONTROL_LOST' if maintenance and maintenance.done() else 'SERVICE_STOP')
         tasks=[job['task'] for job in manager.jobs.values() if job.get('task')]

@@ -1,0 +1,10 @@
+--- a/components/execd/pkg/web/router.go
++++ b/components/execd/pkg/web/router.go
+@@ -49,6 +49,7 @@
+ 	r.Use(trustedControlPeer(), logMiddleware(), otelHTTPMetricsMiddleware(), runtimeInitGate(), accessTokenMiddleware(accessToken), ProxyMiddleware())
+ 
+ 	r.GET("/ping", controller.PingHandler)
++	r.POST("/lazyx/workspace/fs", workspaceFilesystemHandler)
+ 	r.POST("/internal/init", withInit(func(c *controller.InitController) { c.Init() }))
+ 	r.GET("/ready", withInit(func(c *controller.InitController) { c.Ready() }))
+ 
