@@ -1,0 +1,216 @@
+--- a/components/execd/pkg/web/controller/command.go
++++ b/components/execd/pkg/web/controller/command.go
+@@ -49,8 +49,13 @@
+ 		)
+ 		return
+ 	}
+ 
++	rawOutput, validOutputEncoding := c.negotiateWorkspaceOutput()
++	if !validOutputEncoding {
++		return
++	}
++
+ 	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
+ 	execStart := time.Now()
+ 	var recordOnce sync.Once
+ 	recordExecution := func(result string) {
+@@ -65,8 +70,12 @@
+ 	}
+ 
+ 	runCodeRequest := c.buildExecuteCommandRequest(request)
+ 	eventsHandler, stopSSE := c.setServerEventsHandler(ctx)
++	if rawOutput {
++		eventsHandler.OnExecuteStdout = base64WorkspaceOutput(eventsHandler.OnExecuteStdout)
++		eventsHandler.OnExecuteStderr = base64WorkspaceOutput(eventsHandler.OnExecuteStderr)
++	}
+ 
+ 	// completeCh is closed when OnExecuteComplete fires, meaning the final SSE
+ 	// event has been written and flushed. We only wait for this callback as a
+ 	// safety check and then return immediately to avoid fixed tail latency.
+--- /dev/null
++++ b/components/execd/pkg/web/controller/workspace_output.go
+@@ -0,0 +1,40 @@
++// Copyright 2026 LazyX contributors; Apache-2.0.
++// Opt-in lossless command output, encoded before JSON converts invalid UTF-8.
++package controller
++
++import (
++	"encoding/base64"
++	"net/http"
++
++	"github.com/alibaba/opensandbox/execd/pkg/web/model"
++)
++
++const workspaceOutputHeader = "X-LazyX-Command-Output"
++const workspaceOutputEncoding = "base64-v1"
++const workspaceOutputChunkBytes = 64 * 1024
++
++func (c *CodeInterpretingController) negotiateWorkspaceOutput() (bool, bool) {
++	switch c.ctx.GetHeader(workspaceOutputHeader) {
++	case "":
++		return false, true
++	case workspaceOutputEncoding:
++		// This trusted response header is visible before the first SSE byte.
++		c.ctx.Header(workspaceOutputHeader, workspaceOutputEncoding)
++		return true, true
++	default:
++		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, "unsupported workspace output encoding")
++		return false, false
++	}
++}
++
++func base64WorkspaceOutput(emit func(string)) func(string) {
++	return func(text string) {
++		// Go strings still hold the original arbitrary bytes here. Do not range
++		// over runes or JSON-encode the bytes before converting to base64.
++		for len(text) > 0 {
++			size := min(len(text), workspaceOutputChunkBytes)
++			emit(base64.StdEncoding.EncodeToString([]byte(text[:size])))
++			text = text[size:]
++		}
++	}
++}
+--- /dev/null
++++ b/components/execd/pkg/web/controller/workspace_output_test.go
+@@ -0,0 +1,141 @@
++// Copyright 2026 LazyX contributors; Apache-2.0.
++package controller
++
++import (
++	"bytes"
++	"encoding/base64"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/alibaba/opensandbox/execd/pkg/flag"
++	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
++	"github.com/alibaba/opensandbox/execd/pkg/runtime"
++)
++
++type workspaceOutputTestRunner struct {
++	codeExecutionRunner
++	stdout []byte
++	stderr []byte
++	exitSeven bool
++	executed bool
++}
++
++func (r *workspaceOutputTestRunner) Execute(request *runtime.ExecuteCodeRequest) error {
++	r.executed = true
++	request.Hooks.OnExecuteInit("trusted-command-id")
++	request.Hooks.OnExecuteStdout(string(r.stdout))
++	request.Hooks.OnExecuteStderr(string(r.stderr))
++	if r.exitSeven {
++		request.Hooks.OnExecuteError(&execute.ErrorOutput{EName: "CommandExecutionError", EValue: "7", Traceback: []string{}})
++	} else {
++		request.Hooks.OnExecuteComplete(time.Millisecond)
++	}
++	return nil
++}
++
++func workspaceOutputTestRequest(t *testing.T, header string, runner *workspaceOutputTestRunner) *httptest.ResponseRecorder {
++	t.Helper()
++	oldRunner, oldGrace := codeRunner, flag.ApiGracefulShutdownTimeout
++	codeRunner, flag.ApiGracefulShutdownTimeout = runner, 0
++	t.Cleanup(func() { codeRunner, flag.ApiGracefulShutdownTimeout = oldRunner, oldGrace })
++	w := httptest.NewRecorder()
++	ctx, _ := gin.CreateTestContext(w)
++	ctx.Request = httptest.NewRequest(http.MethodPost, "/command", strings.NewReader(`{"command":"synthetic-no-process"}`))
++	ctx.Request.Header.Set("Content-Type", "application/json")
++	if header != "" { ctx.Request.Header.Set(workspaceOutputHeader, header) }
++	NewCodeInterpretingController(ctx).RunCommand()
++	return w
++}
++
++func workspaceOutputEvents(t *testing.T, response *httptest.ResponseRecorder) []map[string]any {
++	t.Helper()
++	var events []map[string]any
++	for _, line := range strings.Split(response.Body.String(), "\n") {
++		// The fixed execd protocol writes JSON plus a blank line, without a
++		// data: prefix. Do not silently skip frames if this contract changes.
++		if strings.TrimSpace(line) == "" { continue }
++		var event map[string]any
++		if err := json.Unmarshal([]byte(line), &event); err != nil { t.Fatal(err) }
++		if _, ok := event["type"].(string); !ok { t.Fatal("event type missing") }
++		events = append(events, event)
++	}
++	return events
++}
++
++func TestWorkspaceOutputBinaryRoundTripAndControlEvents(t *testing.T) {
++	var raw []byte
++	for i := 0; i < 257; i++ { for value := 0; value < 256; value++ { raw = append(raw, byte(value)) } }
++	raw = append(raw, []byte("\x00\r\n合法的\ufffd字符")...)
++	runner := &workspaceOutputTestRunner{stdout: raw, stderr: []byte{0xff, 0xfe, 0, '\n'}}
++	w := workspaceOutputTestRequest(t, workspaceOutputEncoding, runner)
++	if !runner.executed || w.Code != http.StatusOK || w.Header().Get(workspaceOutputHeader) != workspaceOutputEncoding { t.Fatal("encoding was not acknowledged") }
++	var stdout, stderr []byte
++	initSeen, completeSeen := false, false
++	for _, event := range workspaceOutputEvents(t, w) {
++		switch event["type"] {
++		case "stdout", "stderr":
++			data, err := base64.StdEncoding.DecodeString(event["text"].(string))
++			if err != nil || len(data) > workspaceOutputChunkBytes { t.Fatal("invalid or oversized binary frame") }
++			if event["type"] == "stdout" { stdout = append(stdout, data...) } else { stderr = append(stderr, data...) }
++		case "init": initSeen = event["text"] == "trusted-command-id"
++		case "execution_complete": completeSeen = event["execution_time"] == float64(1)
++		}
++	}
++	if !bytes.Equal(stdout, raw) { t.Fatalf("stdout bytes changed: got %d, want %d", len(stdout), len(raw)) }
++	if !bytes.Equal(stderr, runner.stderr) { t.Fatalf("stderr bytes changed: got %d, want %d", len(stderr), len(runner.stderr)) }
++	if !initSeen || !completeSeen { t.Fatalf("control events changed: init=%t complete=%t", initSeen, completeSeen) }
++}
++
++func TestWorkspaceOutputLegacyTextAndErrorRemainUnchanged(t *testing.T) {
++	runner := &workspaceOutputTestRunner{stdout: []byte("legacy\r\n"), stderr: []byte("diagnostic"), exitSeven: true}
++	w := workspaceOutputTestRequest(t, "", runner)
++	if w.Header().Get(workspaceOutputHeader) != "" { t.Fatal("legacy request advertised an encoding") }
++	stdoutSeen, stderrSeen, initSeen, errorSeen := false, false, false, false
++	for _, event := range workspaceOutputEvents(t, w) {
++		if event["type"] == "stdout" { stdoutSeen = event["text"] == "legacy\r\n" }
++		if event["type"] == "stderr" { stderrSeen = event["text"] == "diagnostic" }
++		if event["type"] == "init" { initSeen = event["text"] == "trusted-command-id" }
++		if event["type"] == "error" {
++			value := event["error"].(map[string]any)
++			errorSeen = value["ename"] == "CommandExecutionError" && value["evalue"] == "7"
++		}
++	}
++	if !stdoutSeen || !stderrSeen || !initSeen || !errorSeen { t.Fatalf("legacy events changed: stdout=%t stderr=%t init=%t error=%t", stdoutSeen, stderrSeen, initSeen, errorSeen) }
++}
++
++func TestWorkspaceOutputUnknownEncodingRejectedBeforeExecution(t *testing.T) {
++	for _, header := range []string{"unknown-v2", "BASE64-V1", "base64-v1 "} {
++		runner := &workspaceOutputTestRunner{}
++		w := workspaceOutputTestRequest(t, header, runner)
++		if w.Code != http.StatusBadRequest || runner.executed || w.Header().Get(workspaceOutputHeader) != "" { t.Fatal("unsupported encoding ran a command") }
++	}
++}
++
++func TestWorkspaceOutputSplitUTF8IsBytePreserving(t *testing.T) {
++	raw := []byte("a\ufffd\x00\r\n")
++	var got []byte
++	emit := base64WorkspaceOutput(func(text string) { data, err := base64.StdEncoding.DecodeString(text); if err != nil { t.Fatal(err) }; got = append(got, data...) })
++	for _, value := range raw { emit(string([]byte{value})) }
++	if !bytes.Equal(got, raw) { t.Fatal("split UTF-8 bytes were decoded prematurely") }
++}
++
++func TestWorkspaceOutputFrameBoundaries(t *testing.T) {
++	for _, size := range []int{65536, 65537} {
++		raw := bytes.Repeat([]byte{'x'}, size)
++		var decoded []byte
++		frames := 0
++		emit := base64WorkspaceOutput(func(text string) {
++			data, err := base64.StdEncoding.DecodeString(text)
++			if err != nil || len(data) > workspaceOutputChunkBytes { t.Fatal("invalid binary frame") }
++			frames++
++			decoded = append(decoded, data...)
++		})
++		emit(string(raw))
++		if !bytes.Equal(raw, decoded) || frames != (size+workspaceOutputChunkBytes-1)/workspaceOutputChunkBytes { t.Fatal("frame boundary lost bytes") }
++	}
++}

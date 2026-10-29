@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import grpc
+from opensandbox.config import ConnectionConfig
 from sandbox_model.proto import workspace_pb2 as pb
 from sandbox_model.workspace_service import WorkspaceService, MAX_FILE, ARGV_TRAMPOLINE
 
@@ -27,7 +28,7 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         config={'Runtime':'runsc','ReadonlyRootfs':True,'Privileged':False,'LogConfig':{'Type':'none'},'CapDrop':['ALL']}
         self.manager=NS(settings=NS(max_memory_mb=512,max_history=100,max_inflight=2),healthy=Mock(return_value=True),
             admission_reason=Mock(return_value=''),slots=asyncio.Semaphore(1),ensure_image=Mock(return_value='fixed-image'),
-            network=NS(prepare=Mock()),test_mode=False,registry=Mock(),leases=Mock(),connection=NS(),cleanup=AsyncMock(),
+            network=NS(prepare=Mock()),test_mode=False,registry=Mock(),leases=Mock(),connection=ConnectionConfig(domain='control.invalid'),cleanup=AsyncMock(),
             client=NS(containers=NS(list=Mock(return_value=[NS(labels={'opensandbox.io/id':'fixed-id'},attrs={'HostConfig':config})]))))
         self.service=WorkspaceService(self.manager,Path(self.temp.name)/'workspaces.json')
         self.context=Context()
@@ -172,8 +173,8 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         await self.open()
         async def run(*args,handlers,**kwargs):
             await handlers.on_init(NS(id='trusted-execd-id'))
-            await handlers.on_stdout(NS(text='{"exit_code":0}'))
-            await handlers.on_stderr(NS(text='diagnostic'))
+            await handlers.on_stdout(NS(text=base64.b64encode(b'{"exit_code":0}').decode()))
+            await handlers.on_stderr(NS(text=base64.b64encode(b'diagnostic').decode()))
         self.sandbox.commands.run.side_effect=run
         result=await self.service.StartCommand(pb.CommandRequest(workspace_id='operation',request_id='cmd',argv=['false']),self.context)
         await self.service.entries['operation']['commands']['cmd']['task']
@@ -200,3 +201,44 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
         reply=await self.service.PollCommand(pb.CommandRef(workspace_id='operation',command_id='slow'),self.context)
         self.assertTrue(reply.timed_out);self.assertTrue(reply.exit_code_available);self.assertTrue(reply.output_complete)
         self.sandbox.commands.interrupt.assert_awaited_once_with('real-command')
+
+    async def test_raw_command_preserves_arbitrary_bytes_and_split_utf8(self):
+        await self.open()
+        raw=bytes(range(256))+b'\x00\r\n'+'\ufffd'.encode()
+        async def run(*args,handlers,**kwargs):
+            await handlers.on_init(NS(id='trusted-raw-id'))
+            for value in (raw[:-2],raw[-2:-1],raw[-1:]):
+                await handlers.on_stdout(NS(text=base64.b64encode(value).decode()))
+            await handlers.on_stderr(NS(text=base64.b64encode(b'\xff\x00stderr').decode()))
+        self.sandbox.commands.run.side_effect=run
+        await self.service.StartCommand(pb.CommandRequest(workspace_id='operation',request_id='raw',argv=['test']),self.context)
+        await self.service.entries['operation']['commands']['raw']['task']
+        result=await self.service.PollCommand(pb.CommandRef(workspace_id='operation',command_id='raw'),self.context)
+        self.assertEqual(result.stdout,raw);self.assertEqual(result.stderr,b'\xff\x00stderr')
+        self.assertTrue(result.output_complete);self.assertEqual(result.exit_code,7)
+        connection=self.create.call_args.kwargs['connection_config']
+        self.assertEqual(connection.headers['X-LazyX-Command-Output'],'base64-v1')
+        self.assertNotIn('X-LazyX-Command-Output',self.manager.connection.headers)
+
+    async def test_raw_output_limit_counts_decoded_bytes(self):
+        await self.open()
+        async def run(*args,handlers,**kwargs):
+            await handlers.on_init(NS(id='limit-id'))
+            await handlers.on_stdout(NS(text=base64.b64encode(b'0123456789').decode()))
+        self.sandbox.commands.run.side_effect=run
+        await self.service.StartCommand(pb.CommandRequest(workspace_id='operation',request_id='limit',argv=['test'],output_limit_bytes=5),self.context)
+        await self.service.entries['operation']['commands']['limit']['task']
+        result=await self.service.PollCommand(pb.CommandRef(workspace_id='operation',command_id='limit'),self.context)
+        self.assertEqual(result.stdout,b'01234');self.assertTrue(result.output_truncated);self.assertFalse(result.output_complete)
+
+    async def test_invalid_base64_never_falls_back_to_plaintext(self):
+        await self.open()
+        async def run(*args,handlers,**kwargs):
+            await handlers.on_init(NS(id='invalid-codec-id'))
+            await handlers.on_stdout(NS(text='not!base64'))
+        self.sandbox.commands.run.side_effect=run
+        await self.service.StartCommand(pb.CommandRequest(workspace_id='operation',request_id='invalid-codec',argv=['test']),self.context)
+        await self.service.entries['operation']['commands']['invalid-codec']['task']
+        result=await self.service.PollCommand(pb.CommandRef(workspace_id='operation',command_id='invalid-codec'),self.context)
+        self.assertEqual(result.stdout,b'');self.assertFalse(result.output_complete);self.assertFalse(result.exit_code_available)
+        self.assertEqual(result.error_code,'EXECUTION_UNAVAILABLE')

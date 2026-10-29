@@ -14,6 +14,7 @@ from opensandbox.models import PlatformSpec
 from opensandbox.models.execd import ExecutionHandlers, RunCommandOpts
 
 from .architecture import runtime_architecture
+from .workspace_output import decode_output, workspace_connection
 from .proto import workspace_pb2 as pb, workspace_pb2_grpc as rpc
 from .watchdog import atomic_json, read_private_json
 
@@ -151,7 +152,7 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
                 env={'HOME':'/home/sandbox','TMPDIR':'/tmp','LANG':'C.UTF-8','TZ':'UTC'},
                 metadata={'lazyx.job':entry['job_id']},resource={'cpu':'1','memory':f'{memory}Mi'},
                 timeout=timedelta(seconds=max(1,entry['deadline']-time.time())),
-                ready_timeout=timedelta(seconds=90),connection_config=self.manager.connection))
+                ready_timeout=timedelta(seconds=90),connection_config=workspace_connection(self.manager.connection)))
             entry['creation']=creation
             entry['sandbox']=await asyncio.shield(creation)
             owned=await asyncio.to_thread(self.manager.client.containers.list,
@@ -370,7 +371,7 @@ class WorkspaceService(rpc.WorkspaceServiceServicer):
         timeout=request.timeout_seconds or 120
         limit=request.output_limit_bytes or MAX_OUTPUT
         async def capture(message,channel):
-            raw=message.text.encode()
+            raw=decode_output(message.text)
             cached=sum(len(c['stdout'])+len(c['stderr']) for c in entry['commands'].values())
             remaining=max(0,min(limit-len(command[channel]),MAX_CACHED_OUTPUT-cached))
             command[channel].extend(raw[:remaining])

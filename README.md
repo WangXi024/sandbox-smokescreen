@@ -6,6 +6,8 @@ Python 管理服务通过 OpenSandbox 执行任务，使用 Docker + gVisor 隔�
 
 独立服务保留原 ARM64 Docker Desktop 验收记录，并于 2026-10-29 在 Windows Docker Desktop / WSL2 AMD64 完成 MyPersonalAgent 的官方 Coder + Temporal 实际接入、工作区与旧协议回归。工作区协议和本次证据见 [Agent 工作区与验收](docs/workspace-session.md)；目标服务器仍需在实际机器上分别验收。原测试证据见 [验证报告](docs/验证报告.md)，完整报告及产物位于 [外部产物目录](../sandbox_smokescreen_outputs/)。
 
+工作区命令输出新增 `base64-v1` 内部传输协商，用于保留任意 stdout/stderr 原始字节；原 `SandboxService` 继续使用原文本通道。本轮 198 项 Python、5 项 Go 离线回归，以及真实节点原始字节通道、八项应用样例验证、官方工作区 38 项、旧协议四场景和学习材料五场景均已通过，节点镜像已提升到本机 `amd64` 标签。学习应用部署由主项目单独记录。协议、限额和本轮状态见 [工作区原始字节输出](docs/workspace-session.md#工作区原始字节输出)。
+
 ## 提供的能力
 
 | 内容 | 当前范围 |
