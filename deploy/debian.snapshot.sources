@@ -1,0 +1,14 @@
+# Chromium 155.0.8059.39-1~deb13u1 is present for amd64 and arm64 in this fixed official snapshot.
+Types: deb
+URIs: https://snapshot.debian.org/archive/debian/20261013T000000Z/
+Suites: trixie trixie-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+Check-Valid-Until: no
+
+Types: deb
+URIs: https://snapshot.debian.org/archive/debian-security/20261013T000000Z/
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+Check-Valid-Until: no

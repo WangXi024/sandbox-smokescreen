@@ -10,12 +10,19 @@ umask 077
 mkdir -p /run/sandbox_model/origin
 [[ $(findmnt -n -o FSTYPE -T /run/sandbox_model) == tmpfs ]]
 
+# 可选代理只传给可信镜像构建的隐式 build args；任务环境仍由服务逐项构造。
+build_proxy_args=()
+if [[ -n ${SANDBOX_BUILD_PROXY:-} ]]; then
+    for name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+        build_proxy_args+=(--build-arg "$name=$SANDBOX_BUILD_PROXY")
+    done
+fi
 printf '[镜像] 构建固定运行与功能镜像\n'
-docker build -q -f deploy/Dockerfile.runtime -t sandbox-model-runtime:sb0 .
-docker build -q -f deploy/Dockerfile.features -t sandbox-model-features:sb1 .
-docker build -q -f deploy/Dockerfile.builder -t sandbox-model-builder:sb3 .
+docker build "${build_proxy_args[@]}" -q -f deploy/Dockerfile.runtime -t sandbox-model-runtime:sb0 .
+docker build "${build_proxy_args[@]}" -q -f deploy/Dockerfile.features -t sandbox-model-features:sb1 .
+docker build "${build_proxy_args[@]}" -q -f deploy/Dockerfile.builder -t sandbox-model-builder:sb3 .
 printf '[镜像] 构建固定 Smokescreen 与 TLS 检查入口\n'
-docker build -q -f deploy/Dockerfile.smokescreen -t sandbox-smokescreen-egress:7d0ddfa-tls1 .
+docker build "${build_proxy_args[@]}" -q -f deploy/Dockerfile.smokescreen -t sandbox-smokescreen-egress:7d0ddfa-tls1 .
 
 # 固定出口网络只在带本项目标签时复用，避免误占其他网络。
 if docker network inspect sb-out >/dev/null 2>&1; then
@@ -76,7 +83,7 @@ versions = {
     'feature_versions':subprocess.check_output(['docker','run','--rm','--entrypoint','python','sandbox-model-features:sb1','-c','import importlib.metadata,json; print(json.dumps({k:importlib.metadata.version(k) for k in ["playwright","pypdf","python-docx","openpyxl","PyYAML","Pillow","pypdfium2"]}))'],text=True).strip(),
     'chromium':subprocess.check_output(['docker','run','--rm','--entrypoint','chromium','sandbox-model-features:sb1','--version'],text=True).strip(),
     'node':subprocess.check_output(['docker','run','--rm','--entrypoint','node','sandbox-model-features:sb1','--version'],text=True).strip(),
-    'source_sha256':{name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ('src/sandbox_model/runtime_adapter.py','deploy/execd-peer.patch','src/egress/main.go','src/egress/tls.go','src/egress/diagnostics.go','src/egress/revoke.go','src/egress/go.mod','src/egress/go.sum','src/sandbox_model/service.py','src/sandbox_model/guest.py','src/sandbox_model/network.py','src/sandbox_model/watchdog.py','src/sandbox_model/proto/sandbox.proto','src/sandbox_model/environments.py','src/sandbox_model/build_guest.py','deploy/Dockerfile.builder','src/egress/doh.go','src/egress/quota.go','src/sandbox_model/settings.py','src/sandbox_model/supervisor.py','src/sandbox_model/logs.py','deploy/settings.json')},
+    'source_sha256':{name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ('src/sandbox_model/runtime_adapter.py','src/sandbox_model/architecture.py','deploy/execd-peer.patch','src/egress/main.go','src/egress/tls.go','src/egress/diagnostics.go','src/egress/revoke.go','src/egress/go.mod','src/egress/go.sum','src/sandbox_model/service.py','src/sandbox_model/guest.py','src/sandbox_model/network.py','src/sandbox_model/watchdog.py','src/sandbox_model/proto/sandbox.proto','src/sandbox_model/environments.py','src/sandbox_model/build_guest.py','deploy/Dockerfile.builder','deploy/Dockerfile.features','deploy/debian.snapshot.sources','src/egress/doh.go','src/egress/quota.go','src/sandbox_model/settings.py','src/sandbox_model/supervisor.py','src/sandbox_model/logs.py','deploy/settings.json')},
 }
 Path('/run/sandbox_model/versions.json').write_text(json.dumps(versions, indent=2)+'\n')
 PY

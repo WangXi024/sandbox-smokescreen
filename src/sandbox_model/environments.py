@@ -18,6 +18,7 @@ import uuid
 
 import docker
 from .runtime_adapter import harden_host_config
+from .architecture import runtime_platform
 from .watchdog import atomic_json, read_private_json
 
 STATE = Path('/var/lib/sandbox_model/environments.json')
@@ -199,7 +200,7 @@ class Environments:
         deps = declaration(request.environment,list(request.dependencies))
         builder = await asyncio.to_thread(self.client.images.get, 'sandbox-model-builder:sb3')
         spec = {'environment':request.environment,'dependencies':deps,'base':base,'builder':builder.id,
-                'platform':'linux/arm64','template':'sb3-v1','sources':SOURCES}
+                'platform':runtime_platform(),'template':'sb3-v1','sources':SOURCES}
         key = fingerprint(spec)
         job['environment_key'] = key
         self.pins[key] += 1

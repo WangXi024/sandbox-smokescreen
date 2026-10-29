@@ -8,10 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 util-linux procps mount && rm -rf /var/lib/apt/lists/*
 COPY --from=docker /usr/local/bin/ /usr/local/bin/
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
-# 此构建固定为 ARM64，校验下载摘要后安装 gVisor 的 runsc 等组件。
-RUN test "$(uname -m)" = aarch64 \
-    && curl --retry 3 -fsSL https://storage.googleapis.com/gvisor/releases/release/20261005.0/aarch64/gvisor.tar.zstd -o /tmp/gvisor.tar.zstd \
-    && echo 'cb1c1ac7616f1f0e2287d39660aa9a65f1d81b866c7fa29457f78da62373baadda2d55aa96a200743dfe56193e43d2b6256af23a23d41d0b49a49b4971982435  /tmp/gvisor.tar.zstd' | sha512sum -c - \
+# 同一固定版本按节点架构下载；校验官方 SHA512，未知架构拒绝构建。
+RUN case "$(uname -m)" in \
+      x86_64) gvisor_sha512=27fed731b432d6a39d908956623fd273979fda66b3ccf4b9c12413ea417c516e18a9dc3cced403fb28efe495d64dce4251f51cf8c4d9f4a72f9833bd96b6bb35 ;; \
+      aarch64) gvisor_sha512=cb1c1ac7616f1f0e2287d39660aa9a65f1d81b866c7fa29457f78da62373baadda2d55aa96a200743dfe56193e43d2b6256af23a23d41d0b49a49b4971982435 ;; \
+      *) echo 'Unsupported node architecture' >&2; exit 1 ;; \
+    esac \
+    && curl --retry 3 -fsSL "https://storage.googleapis.com/gvisor/releases/release/20261005.0/$(uname -m)/gvisor.tar.zstd" -o /tmp/gvisor.tar.zstd \
+    && printf '%s  /tmp/gvisor.tar.zstd\n' "$gvisor_sha512" | sha512sum -c - \
     && tar --zstd -xf /tmp/gvisor.tar.zstd -C /usr/local/bin && rm /tmp/gvisor.tar.zstd
 # 外层节点承载管理服务，任务与代理容器由节点内部的 Docker 创建。
 WORKDIR /opt/sandbox_model

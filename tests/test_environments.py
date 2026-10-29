@@ -145,6 +145,20 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         with patch('sandbox_model.environments.read_private_json',return_value={'language':'python'}):
             with self.assertRaisesRegex(ValueError,'LOCK_INVALID'):await env.ensure(self.job('bad'),'base')
 
+    async def test_cache_key_separates_runtime_architectures(self):
+        env=self.manager()
+        env.build=AsyncMock(return_value={'image_id':'image','environment_id':'environment'})
+        amd64,arm64=self.job('amd64'),self.job('arm64')
+        with patch('sandbox_model.environments.runtime_platform',return_value='linux/amd64'):
+            await env.ensure(amd64,'same-base')
+            amd64_key=amd64['environment_key'];env.release(amd64)
+        with patch('sandbox_model.environments.runtime_platform',return_value='linux/arm64'):
+            await env.ensure(arm64,'same-base')
+            arm64_key=arm64['environment_key'];env.release(arm64)
+        self.assertNotEqual(amd64_key,arm64_key)
+        self.assertEqual([call.args[1]['platform'] for call in env.build.await_args_list],
+                         ['linux/amd64','linux/arm64'])
+
     def test_lru_keeps_pinned_images(self):
         env=self.manager()
         env.entries={str(i):{'used':i,'bytes':1,'image_id':str(i)} for i in range(8)}

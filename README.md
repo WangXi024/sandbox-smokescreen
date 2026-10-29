@@ -29,9 +29,9 @@ Python 管理服务通过 OpenSandbox 执行任务，使用 Docker + gVisor 隔�
 
 ## 启动和停止
 
-已验收的平台是 Apple Silicon Mac 的 Docker Desktop。当前构建固定为 ARM64，暂未提供 AMD64 构建；ARM64 Linux Docker Engine 与阿里云目标服务器需在实际机器上另行验收。运行节点内部固定使用 Docker 29.1.3、gVisor `release-20261005.0` 和 Smokescreen。Mac 使用 Docker Desktop 提供的 Linux 环境，无需另建 Lima 实例。
+已验收的平台是 Apple Silicon Mac 的 Docker Desktop。2026-10-29 在 Windows Docker Desktop / WSL2 AMD64 上完成了节点启动、Python/Node 标准库、重复提交、取消、产物校验保存与接收确认的基础离线验收；浏览器联网、文件处理和动态依赖的 Windows 完整验收仍需分别执行。构建支持 Linux AMD64 与 ARM64，两种架构均使用固定版本 gVisor 及独立的官方 SHA512 校验。架构支持不等于部署验收，ARM64 Linux Docker Engine 与阿里云目标服务器需在实际机器上分别验收。运行节点内部固定使用 Docker 29.1.3、gVisor `release-20261005.0` 和 Smokescreen。 功能镜像使用 [Debian 官方快照](https://snapshot.debian.org/) `20261013T000000Z`，保留 Chromium `155.0.8059.39-1~deb13u1`；APT 保持 Debian archive-keyring 签名及包哈希验证，仅对固定快照关闭元数据有效期检查。Mac 使用 Docker Desktop 提供的 Linux 环境，无需另建 Lima 实例。
 
-先启动 Docker Desktop，确认 `docker compose version` 可用。节点需要 4 核、6 GiB 内存，请为 Docker Desktop 留足资源。服务本身通过 Compose 部署；运行本机调用示例需要 Python 3.10 或更高版本，本机已使用 Python 3.12 验收。
+先启动 Docker Desktop，确认 `docker compose version` 可用。可信镜像准备需要代理时，可在本项目的 Compose override 中设置 `SANDBOX_BUILD_PROXY`；它只用于节点内部 Docker 拉取与预构建，不写入任务环境，任务出网仍受 Smokescreen 控制。节点需要 4 核、6 GiB 内存，请为 Docker Desktop 留足资源。服务本身通过 Compose 部署；运行本机调用示例需要 Python 3.10 或更高版本，本机已使用 Python 3.12 验收。
 
 ```bash
 cd /Users/wx/LazyX/sandbox_smokescreen

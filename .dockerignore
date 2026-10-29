@@ -4,3 +4,7 @@
 **/*.pyc
 .git
 *.log
+.runtime
+.uv-cache
+.env
+.env.*

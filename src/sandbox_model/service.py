@@ -29,6 +29,7 @@ from opensandbox.config import ConnectionConfig
 from opensandbox.models import PlatformSpec, WriteEntry
 from opensandbox.models.execd import ExecutionHandlers, RunCommandOpts
 from .environments import Environments, declaration
+from .architecture import runtime_architecture
 from .settings import Settings
 from .logs import start as start_logged
 from . import resources
@@ -532,7 +533,7 @@ class Manager(rpc.SandboxServiceServicer):
             if self.test_mode and (RUN/'test-spki.txt').exists():
                 env['LAZYX_TEST_TLS_SPKI'] = (RUN/'test-spki.txt').read_text().strip()
             creation=asyncio.create_task(Sandbox.create(image,entrypoint=['sleep','infinity'],
-                 platform=PlatformSpec(os='linux',arch='arm64'),env=env,metadata={'lazyx.job':ident},
+                 platform=PlatformSpec(os='linux',arch=runtime_architecture()),env=env,metadata={'lazyx.job':ident},
                  resource={'cpu':'1','memory':f'{request.memory_mb or 512}Mi'},timeout=timedelta(seconds=180),
                  ready_timeout=timedelta(seconds=90),connection_config=self.connection))
             sandbox=await asyncio.shield(creation)

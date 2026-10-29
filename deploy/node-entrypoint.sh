@@ -30,8 +30,13 @@ shutdown() {
 }
 trap 'shutdown; exit 0' TERM INT
 trap shutdown EXIT
+# 代理仅用于本节点 Docker 的公共镜像拉取，不设置服务或任务的 HTTP_PROXY。
+docker_proxy_args=()
+if [[ -n ${SANDBOX_BUILD_PROXY:-} ]]; then
+    docker_proxy_args=(--http-proxy "$SANDBOX_BUILD_PROXY" --https-proxy "$SANDBOX_BUILD_PROXY")
+fi
 # 该 Docker 属于本节点；日志经过有界收集器写入内存目录。
-dockerd > >(.venv/bin/python -B -m sandbox_model.logs /run/sandbox_model/docker.log) 2>&1 &
+dockerd "${docker_proxy_args[@]}" > >(.venv/bin/python -B -m sandbox_model.logs /run/sandbox_model/docker.log) 2>&1 &
 docker_pid=$!
 # 在准备镜像前等待内部 Docker 可用，同时检测其提前退出。
 for attempt in $(seq 1 100); do
