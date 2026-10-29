@@ -1,10 +1,10 @@
 # 独立沙箱服务
 
-Python 管理服务通过 OpenSandbox 执行任务，使用 Docker + gVisor 隔离，Smokescreen 与宿主规则限制出网。每次任务创建新环境，结束后销毁。代码、输入、输出、临时文件及脚本日志只在执行节点内存中处理；公共软件镜像和不含正文的状态记录可以保存在磁盘。
+Python 管理服务通过 OpenSandbox 执行任务，使用 Docker + gVisor 隔离，Smokescreen 与宿主规则限制出网。原 `SandboxService` 每次任务创建新环境，结束后销毁；`WorkspaceService` 让同一次 Agent 操作的多次命令与文件访问复用工作区，操作结束或 TTL 到期销毁。代码、输入、输出、临时文件及脚本日志只在执行节点内存中处理；公共软件镜像和不含正文的状态记录可以保存在磁盘。
 
 接口为内网免认证 gRPC，Agent 作为调用方提交代码和数据，服务负责执行、回传结果和清理。模型调用、业务权限、带 API Key 的第三方调用和长期存储由 Agent 后端负责。正常启动不运行合成网站或模拟连接器，模拟模型与工具通道只在显式测试模式开放。
 
-独立服务已通过本机 ARM64 Docker Desktop 验收；实际 Agent 接入和目标服务器验收尚待完成。测试证据见 [验证报告](docs/验证报告.md)，完整报告及产物位于 [外部产物目录](../sandbox_smokescreen_outputs/)。
+独立服务保留原 ARM64 Docker Desktop 验收记录，并于 2026-10-29 在 Windows Docker Desktop / WSL2 AMD64 完成 MyPersonalAgent 的官方 Coder + Temporal 实际接入、工作区与旧协议回归。工作区协议和本次证据见 [Agent 工作区与验收](docs/workspace-session.md)；目标服务器仍需在实际机器上分别验收。原测试证据见 [验证报告](docs/验证报告.md)，完整报告及产物位于 [外部产物目录](../sandbox_smokescreen_outputs/)。
 
 ## 提供的能力
 
@@ -18,6 +18,9 @@ Python 管理服务通过 OpenSandbox 执行任务，使用 Docker + gVisor 隔�
 | 测试请求通道 | 仅测试模式提供模拟模型/工具响应；正常使用由外部 Agent 后端调用 API，再把业务数据交给沙箱 |
 | 生命周期 | 提交、状态、取消、结果、送达确认、中文阶段日志；独立回收器处理失联和孤立资源 |
 | 环境 | 登记镜像缺失时按固定摘要拉取；Python/npm 公共依赖自动隔离安装、封装和缓存 |
+| Agent 工作区 | 一次操作内共享真实 POSIX 文件、命令与后台进程；独立硬 TTL；幂等关闭及清理确认 |
+
+以下任务输入、产物和保留期限制适用于原一次性任务；工作区采用独立的 [协议与限额](docs/workspace-session.md)，两种模式共用准入、并发槽与节点硬限额。
 
 默认两任务并发，总在途任务最多六个。单任务代码与输入文件合计最多 1 MiB、输入文件最多 32 个；产物最多八个，单个 2 MiB、合计 4 MiB；stdout/stderr 各 64 KiB。结果留在内存中最多 180 秒，调用方校验后确认送达；总缓存与在途预留受限。节点限额见 [settings.json](deploy/settings.json)，任务只能缩小额度。结果正文清理后，状态与防重复提交记录默认保留 24 小时，最多 4096 条；达到上限返回 `HISTORY_FULL`，不提前淘汰尚在保留期的记录。超过保留期后原编号不再保证去重，调用方应为新任务生成新 UUID。清理未完成的记录不会被过期删除。
 
@@ -133,7 +136,7 @@ SANDBOX_TEST_MODE=0 python3 scripts/run.py
 
 ## 调用接口与模块职责
 
-以 [sandbox.proto](src/sandbox_model/proto/sandbox.proto) 为接口契约，服务端与调用方使用相同版本的协议。
+原一次性任务以 [sandbox.proto](src/sandbox_model/proto/sandbox.proto) 为接口契约。持久工作区使用独立的 [workspace.proto](src/sandbox_model/proto/workspace.proto)，提供 `Open/Status/Close/Filesystem/StartCommand/PollCommand/CancelCommand`；两个服务共用 18443 端口。服务端与调用方使用相同版本的对应协议。
 
 Agent 在沙箱外解释 Skill 和决定步骤，沙箱只执行指定脚本；业务 API Key 留在 Agent 后端。脚本执行中需要 API 数据时，先返回请求说明和中间产物，调用方检查并取得数据后提交一个新任务继续。本版本不提供真实密钥代调用或进程暂停恢复。
 
